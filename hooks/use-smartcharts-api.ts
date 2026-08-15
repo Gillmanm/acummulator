@@ -73,6 +73,7 @@ export function useSmartChartsApi(ws: DerivWS | null): UseSmartChartsApiReturn {
         adjust_start_time: 1,
         count: 1,
         end: 'latest',
+        subscribe: 1,
       };
       if (granularity) request.granularity = granularity;
 

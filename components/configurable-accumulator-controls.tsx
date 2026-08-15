@@ -743,11 +743,18 @@ export function ConfigurableAccumulatorControls(props: ConfigurableAccumulatorCo
         return <div key={key}>{renderers[key]()}</div>;
       })}
       {isAuthenticated && (
-        <Button asChild variant="ghost" className="w-full text-sm text-muted-foreground hover:text-foreground">
-          <Link href="/reports">
-            <Localize i18n_default_text="View your positions →" />
-          </Link>
-        </Button>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <Button asChild variant="ghost" className="w-full text-sm text-muted-foreground hover:text-foreground">
+            <Link href="/reports">
+              <Localize i18n_default_text="View your positions →" />
+            </Link>
+          </Button>
+          <Button asChild variant="ghost" className="w-full text-sm text-muted-foreground hover:text-foreground">
+            <Link href="/scanner">
+              <Localize i18n_default_text="Open scanner →" />
+            </Link>
+          </Button>
+        </div>
       )}
     </div>
   );
