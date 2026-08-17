@@ -369,13 +369,36 @@ export function AccumulatorView({
     );
   }
 
+  // The scanner must be present in both the legacy and no-code/configurable
+  // layouts. The configurable layout is the production path for the deployed
+  // Accumulator, so keeping the scanner only in the standard branch makes it
+  // disappear from the user-facing app.
+  const scannerOverlay = !editMode ? (
+    <AiScannerOverlay
+      activeSymbol={activeSymbol}
+      symbols={symbols}
+      isConnected={isConnected}
+      getQuotes={getQuotes}
+      subscribeQuotes={subscribeQuotes}
+      onPlaceEntry={async () => {
+        await buyContract();
+      }}
+    />
+  ) : null;
+  const chartWithScannerBlock = (
+    <>
+      {chartBlock}
+      {scannerOverlay}
+    </>
+  );
+
   // The configurable controls. `withChart` includes the chart as a reorderable
   // block in the single column (mobile); on desktop the chart is its own column.
   const renderConfigurable = (withChart: boolean) =>
     appConfig ? (
       <ConfigurableAccumulatorControls
         config={appConfig}
-        chartSlot={withChart ? chartBlock : undefined}
+        chartSlot={withChart ? chartWithScannerBlock : undefined}
         growthRate={growthRate}
         onGrowthRateChange={setGrowthRate}
         growthRateOptions={growthRateOptions}
@@ -454,7 +477,7 @@ export function AccumulatorView({
              inner scrollbar) — desktop has the vertical space. */
           <div className="flex w-full max-w-7xl mx-auto flex-col px-4 py-4 gap-3">
             <div className="grid grid-cols-[1fr_400px] gap-4 items-start">
-              <div>{chartBlock}</div>
+              <div>{chartWithScannerBlock}</div>
               {isLoading ? (
                 <Skeleton className="h-[min(33.6rem,66vh)] min-h-[384px] w-full rounded-xl" />
               ) : (
@@ -471,19 +494,7 @@ export function AccumulatorView({
           <div className="max-lg:flex max-lg:flex-col max-lg:flex-1 max-lg:min-h-0 lg:grid lg:grid-cols-[1fr_400px] lg:gap-4">
             {/* Column 1: Chart */}
             <div className="max-lg:shrink-0 flex flex-col gap-2 max-lg:pb-2 pt-2 lg:py-0">
-              {chartBlock}
-              {!editMode && (
-                <AiScannerOverlay
-                  activeSymbol={activeSymbol}
-                  symbols={symbols}
-                  isConnected={isConnected}
-                  getQuotes={getQuotes}
-                  subscribeQuotes={subscribeQuotes}
-                  onPlaceEntry={async () => {
-                    await buyContract();
-                  }}
-                />
-              )}
+              {chartWithScannerBlock}
             </div>
 
             {/* Column 2: Trade controls in a Card */}
