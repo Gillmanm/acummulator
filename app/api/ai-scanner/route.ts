@@ -2,7 +2,14 @@ import { NextResponse } from 'next/server';
 
 export const runtime = 'nodejs';
 
-const MODELS = ['gemini-2.5-flash', 'gemini-2.5-flash-lite'];
+const PREFERRED_MODELS = [
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
+  'gemini-2.0-flash',
+  'gemini-2.0-flash-lite',
+  'gemini-1.5-flash',
+];
+const UPSTREAM_TIMEOUT_MS = 20_000;
 const responseSchema = {
   type: 'OBJECT',
   properties: {
@@ -23,6 +30,11 @@ type GeminiResult = {
 
 type GeminiError = {
   error?: { message?: string; status?: string };
+};
+
+type GeminiModel = {
+  name?: string;
+  supportedGenerationMethods?: string[];
 };
 
 function safeNumber(value: unknown, fallback = 0): number {
@@ -48,9 +60,11 @@ function parseJson(text: string): GeminiResult | null {
 
 function upstreamMessage(status: number, payload: GeminiError): string {
   const message = payload.error?.message?.replace(/AIza[\w-]+/g, '[redacted]')?.slice(0, 240);
-  if (status === 401 || status === 403) return 'Gemini rejected the server API key. Verify GEMINI_API_KEY is a valid Gemini API key and redeploy.';
+  if (status === 400 || status === 401 || status === 403) {
+    return 'Gemini rejected the configured API key or request. Verify that GEMINI_API_KEY is a valid Google Gemini API key with Generative Language API access, then redeploy.';
+  }
   if (status === 429) return 'Gemini rate limit or quota reached. Try again shortly or check the Gemini project quota.';
-  if (status === 404) return 'The configured Gemini model is unavailable for this API key. The server tried its compatible fallback models.';
+  if (status === 404) return 'No Gemini model available for this API key. The server will discover compatible models automatically on the next request.';
   return message ? `Gemini API error: ${message}` : `Gemini API request failed with status ${status}.`;
 }
 
@@ -58,22 +72,60 @@ async function callGemini(apiKey: string, model: string, prompt: string, structu
   const generationConfig = structured
     ? { temperature: 0.1, responseMimeType: 'application/json', responseSchema }
     : { temperature: 0.1, responseMimeType: 'application/json' };
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig,
-    }),
-  });
-  const text = await response.text();
-  let payload: unknown = {};
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
   try {
-    payload = text ? JSON.parse(text) : {};
-  } catch {
-    payload = {};
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig,
+      }),
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    let payload: unknown = {};
+    try {
+      payload = text ? JSON.parse(text) : {};
+    } catch {
+      payload = {};
+    }
+    return { response, payload: payload as GeminiError & { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> } };
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error('Gemini request timed out. Local analysis remains active; try again shortly.');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
   }
-  return { response, payload: payload as GeminiError & { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> } };
+}
+
+async function discoverModels(apiKey: string): Promise<string[]> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+  try {
+    const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models', {
+      headers: { 'x-goog-api-key': apiKey },
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    let payload: { models?: GeminiModel[] } & GeminiError = {};
+    try {
+      payload = text ? JSON.parse(text) : {};
+    } catch {
+      payload = {};
+    }
+    if (!response.ok) throw new Error(upstreamMessage(response.status, payload));
+    const discovered = (payload.models ?? [])
+      .filter(model => model.name && model.supportedGenerationMethods?.includes('generateContent'))
+      .map(model => model.name!.replace(/^models\//, ''))
+      .filter(model => !model.includes('embedding') && !model.includes('aqa'));
+    return [...new Set([...PREFERRED_MODELS.filter(model => discovered.includes(model)), ...discovered])];
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export async function POST(request: Request) {
@@ -103,35 +155,59 @@ export async function POST(request: Request) {
       `Deterministic context: ${JSON.stringify(body.localAnalysis ?? {})}`,
     ].join('\n');
 
+    let models = [...PREFERRED_MODELS];
     let lastFailure = 'Gemini did not return a usable analysis.';
-    for (const model of MODELS) {
-      for (const structured of [true, false]) {
-        const { response, payload } = await callGemini(apiKey, model, prompt, structured);
-        if (!response.ok) {
-          lastFailure = upstreamMessage(response.status, payload);
-          if (response.status === 401 || response.status === 403 || response.status === 429) {
-            return NextResponse.json({ error: lastFailure }, { status: response.status === 429 ? 503 : 502 });
+    const attempted = new Set<string>();
+
+    for (let discoveryPass = 0; discoveryPass < 2; discoveryPass += 1) {
+      for (const model of models) {
+        if (attempted.has(model)) continue;
+        attempted.add(model);
+        for (const structured of [true, false]) {
+          let response: Response;
+          let payload: GeminiError & { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+          try {
+            ({ response, payload } = await callGemini(apiKey, model, prompt, structured));
+          } catch (error) {
+            lastFailure = error instanceof Error ? error.message : 'Gemini request failed before receiving a response.';
+            continue;
           }
-          continue;
+          if (!response.ok) {
+            lastFailure = upstreamMessage(response.status, payload);
+            if (response.status === 400 || response.status === 401 || response.status === 403 || response.status === 429) {
+              return NextResponse.json({ error: lastFailure }, { status: response.status === 429 ? 503 : 502 });
+            }
+            continue;
+          }
+          const text = payload.candidates?.[0]?.content?.parts?.map(part => part.text ?? '').join('').trim();
+          const result = text ? parseJson(text) : null;
+          if (!result) {
+            lastFailure = 'Gemini returned an unreadable analysis. Local analysis remains active.';
+            continue;
+          }
+          const direction = result.direction === 'UP' || result.direction === 'DOWN' ? result.direction : 'WAIT';
+          const confidence = Math.min(96, Math.max(40, Math.round(safeNumber(result.confidence, 40))));
+          const recommendedTicks = Math.min(8, Math.max(2, Math.round(safeNumber(result.recommendedTicks, 4))));
+          return NextResponse.json({
+            direction: confidence >= 68 ? direction : 'WAIT',
+            confidence,
+            recommendedTicks,
+            rationale: typeof result.rationale === 'string' ? result.rationale.slice(0, 500) : 'Evidence did not support a stronger conclusion.',
+          });
         }
-        const text = payload.candidates?.[0]?.content?.parts?.map(part => part.text ?? '').join('').trim();
-        const result = text ? parseJson(text) : null;
-        if (!result) {
-          lastFailure = 'Gemini returned an unreadable analysis. Local analysis remains active.';
-          continue;
-        }
-        const direction = result.direction === 'UP' || result.direction === 'DOWN' ? result.direction : 'WAIT';
-        const confidence = Math.min(96, Math.max(40, Math.round(safeNumber(result.confidence, 40))));
-        const recommendedTicks = Math.min(8, Math.max(2, Math.round(safeNumber(result.recommendedTicks, 4))));
-        return NextResponse.json({
-          direction: confidence >= 68 ? direction : 'WAIT',
-          confidence,
-          recommendedTicks,
-          rationale: typeof result.rationale === 'string' ? result.rationale.slice(0, 500) : 'Evidence did not support a stronger conclusion.',
-        });
+      }
+      try {
+        const discovered = await discoverModels(apiKey);
+        const nextModels = discovered.filter(model => !attempted.has(model));
+        if (!nextModels.length) break;
+        models = nextModels;
+      } catch (error) {
+        lastFailure = error instanceof Error ? error.message : lastFailure;
+        break;
       }
     }
-    return NextResponse.json({ error: lastFailure }, { status: 502 });
+
+    return NextResponse.json({ error: lastFailure }, { status: lastFailure.includes('timed out') ? 504 : 502 });
   } catch {
     return NextResponse.json({ error: 'Invalid scanner request. Local analysis remains active.' }, { status: 400 });
   }
