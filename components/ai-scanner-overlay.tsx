@@ -130,8 +130,9 @@ export function AiScannerOverlay({ activeSymbol, symbols, isConnected, getQuotes
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ symbol: activeSymbolCode, ticks: ticks.slice(-MAX_TICKS), localAnalysis: analysis }),
       });
-      if (!response.ok) throw new Error('Gemini analysis is unavailable. Local analysis remains active.');
-      setAiResponse(await response.json() as AiResponse);
+      const payload = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) throw new Error(payload.error || 'Gemini analysis is unavailable. Local analysis remains active.');
+      setAiResponse(payload as AiResponse);
     } catch (error) {
       setAiError(error instanceof Error ? error.message : 'Gemini analysis failed.');
     } finally {
