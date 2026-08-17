@@ -15,6 +15,7 @@ import { useIsMobile } from '@/hooks/use-is-mobile';
 import { useContractMarkers } from '@/hooks/use-contract-markers';
 import { TradeControls } from './trade-controls';
 import { ConfigurableAccumulatorControls } from './configurable-accumulator-controls';
+import { AiScannerOverlay } from './ai-scanner-overlay';
 import type { ChartBarrier } from '@/components/custom/smart-chart';
 import type {
   AuthState,
@@ -471,6 +472,18 @@ export function AccumulatorView({
             {/* Column 1: Chart */}
             <div className="max-lg:shrink-0 flex flex-col gap-2 max-lg:pb-2 pt-2 lg:py-0">
               {chartBlock}
+              {!editMode && (
+                <AiScannerOverlay
+                  activeSymbol={activeSymbol}
+                  symbols={symbols}
+                  isConnected={isConnected}
+                  getQuotes={getQuotes}
+                  subscribeQuotes={subscribeQuotes}
+                  onPlaceEntry={async () => {
+                    await buyContract();
+                  }}
+                />
+              )}
             </div>
 
             {/* Column 2: Trade controls in a Card */}
