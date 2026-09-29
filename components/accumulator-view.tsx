@@ -16,6 +16,7 @@ import { useContractMarkers } from '@/hooks/use-contract-markers';
 import { TradeControls } from './trade-controls';
 import { ConfigurableAccumulatorControls } from './configurable-accumulator-controls';
 import { AiScannerOverlay } from './ai-scanner-overlay';
+import { useAccumulatorAiTrader } from '@/hooks/use-accumulator-ai-trader';
 import type { ChartBarrier } from '@/components/custom/smart-chart';
 import type {
   AuthState,
@@ -217,6 +218,24 @@ export function AccumulatorView({
     (proposal) => proposal.contract_type === 'ACCU' && proposal.underlying_symbol === activeSymbol?.underlying_symbol
   ) ?? null;
 
+  // AI Accumulator Trader engine for autonomous/AI-only entries and barrier monitoring
+  const aiTrader = useAccumulatorAiTrader({
+    activeSymbol,
+    proposal,
+    prices: prices ?? [],
+    isConnected,
+    isAuthenticated: authState === 'authenticated',
+    activePosition: activeAccuPosition,
+    buyContract,
+    isBuying,
+    buyResult,
+    buyError,
+    sellContract,
+    sellingId,
+    stake,
+    growthRate,
+  });
+
   // Barrier color: green (#008832) when tick is inside, red (#cc2e3d) when crossed.
   const barrierColor = proposal?.hasCrossedBarrier ? '#cc2e3d' : '#008832';
 
@@ -380,8 +399,9 @@ export function AccumulatorView({
       isConnected={isConnected}
       getQuotes={getQuotes}
       subscribeQuotes={subscribeQuotes}
+      aiTrader={aiTrader}
       onPlaceEntry={async () => {
-        await buyContract();
+        await aiTrader.executeAiEntry(true);
       }}
     />
   ) : null;
@@ -422,6 +442,7 @@ export function AccumulatorView({
         selectedKey={selectedKey}
         rearrangeMode={rearrangeMode}
         onReorder={onReorder}
+        aiTrader={aiTrader}
       />
     ) : null;
 
@@ -523,6 +544,7 @@ export function AccumulatorView({
                       onClose={sellContract}
                       isClosing={sellingId === activeAccuPosition?.contract_id}
                       isAuthenticated={authState === 'authenticated'}
+                      aiTrader={aiTrader}
                     />
                   </CardContent>
                 </Card>

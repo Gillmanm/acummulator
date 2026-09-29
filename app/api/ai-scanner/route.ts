@@ -1,214 +1,128 @@
 import { NextResponse } from 'next/server';
+import { GoogleGenAI } from '@google/genai';
+import { analyzeAccumulatorMarket, type AccumulatorAiDecision } from '@/lib/ai-accumulator-engine';
 
 export const runtime = 'nodejs';
 
-const PREFERRED_MODELS = [
-  'gemini-2.5-flash',
-  'gemini-2.5-flash-lite',
-  'gemini-2.0-flash',
-  'gemini-2.0-flash-lite',
-  'gemini-1.5-flash',
-];
-const UPSTREAM_TIMEOUT_MS = 20_000;
 const responseSchema = {
   type: 'OBJECT',
   properties: {
-    direction: { type: 'STRING', enum: ['UP', 'DOWN', 'WAIT'] },
+    entryDecision: { type: 'STRING', enum: ['ENTER', 'WAIT'] },
     confidence: { type: 'NUMBER' },
+    barrierSafety: { type: 'STRING', enum: ['SAFE', 'BORDERLINE', 'CRITICAL'] },
     recommendedTicks: { type: 'INTEGER' },
+    riskLevel: { type: 'STRING', enum: ['LOW', 'MEDIUM', 'HIGH'] },
+    volatilityScore: { type: 'NUMBER' },
     rationale: { type: 'STRING' },
   },
-  required: ['direction', 'confidence', 'recommendedTicks', 'rationale'],
+  required: ['entryDecision', 'confidence', 'barrierSafety', 'recommendedTicks', 'riskLevel', 'volatilityScore', 'rationale'],
 };
-
-type GeminiResult = {
-  direction?: string;
-  confidence?: number;
-  recommendedTicks?: number;
-  rationale?: string;
-};
-
-type GeminiError = {
-  error?: { message?: string; status?: string };
-};
-
-type GeminiModel = {
-  name?: string;
-  supportedGenerationMethods?: string[];
-};
-
-function safeNumber(value: unknown, fallback = 0): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function parseJson(text: string): GeminiResult | null {
-  const cleaned = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-  try {
-    return JSON.parse(cleaned) as GeminiResult;
-  } catch {
-    const start = cleaned.indexOf('{');
-    const end = cleaned.lastIndexOf('}');
-    if (start < 0 || end <= start) return null;
-    try {
-      return JSON.parse(cleaned.slice(start, end + 1)) as GeminiResult;
-    } catch {
-      return null;
-    }
-  }
-}
-
-function upstreamMessage(status: number, payload: GeminiError): string {
-  const message = payload.error?.message?.replace(/AIza[\w-]+/g, '[redacted]')?.slice(0, 240);
-  if (status === 400 || status === 401 || status === 403) {
-    return 'Gemini rejected the configured API key or request. Verify that GEMINI_API_KEY is a valid Google Gemini API key with Generative Language API access, then redeploy.';
-  }
-  if (status === 429) return 'Gemini rate limit or quota reached. Try again shortly or check the Gemini project quota.';
-  if (status === 404) return 'No Gemini model available for this API key. The server will discover compatible models automatically on the next request.';
-  return message ? `Gemini API error: ${message}` : `Gemini API request failed with status ${status}.`;
-}
-
-async function callGemini(apiKey: string, model: string, prompt: string, structured: boolean) {
-  const generationConfig = structured
-    ? { temperature: 0.1, responseMimeType: 'application/json', responseSchema }
-    : { temperature: 0.1, responseMimeType: 'application/json' };
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
-  try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig,
-      }),
-      signal: controller.signal,
-    });
-    const text = await response.text();
-    let payload: unknown = {};
-    try {
-      payload = text ? JSON.parse(text) : {};
-    } catch {
-      payload = {};
-    }
-    return { response, payload: payload as GeminiError & { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> } };
-  } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') {
-      throw new Error('Gemini request timed out. Local analysis remains active; try again shortly.');
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function discoverModels(apiKey: string): Promise<string[]> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
-  try {
-    const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models', {
-      headers: { 'x-goog-api-key': apiKey },
-      signal: controller.signal,
-    });
-    const text = await response.text();
-    let payload: { models?: GeminiModel[] } & GeminiError = {};
-    try {
-      payload = text ? JSON.parse(text) : {};
-    } catch {
-      payload = {};
-    }
-    if (!response.ok) throw new Error(upstreamMessage(response.status, payload));
-    const discovered = (payload.models ?? [])
-      .filter(model => model.name && model.supportedGenerationMethods?.includes('generateContent'))
-      .map(model => model.name!.replace(/^models\//, ''))
-      .filter(model => !model.includes('embedding') && !model.includes('aqa'));
-    return [...new Set([...PREFERRED_MODELS.filter(model => discovered.includes(model)), ...discovered])];
-  } finally {
-    clearTimeout(timeout);
-  }
-}
 
 export async function POST(request: Request) {
-  const apiKey = process.env.GEMINI_API_KEY?.trim();
-  if (!apiKey) return NextResponse.json({ error: 'GEMINI_API_KEY is not configured on the server.' }, { status: 503 });
-
   try {
-    const body = await request.json() as {
-      symbol?: unknown;
-      ticks?: unknown;
-      localAnalysis?: Record<string, unknown>;
+    const body = (await request.json().catch(() => ({}))) as {
+      symbol?: string;
+      spot?: number;
+      ticks?: Array<{ epoch: number; quote: number }>;
+      highBarrier?: string | number;
+      lowBarrier?: string | number;
+      barrierPercentage?: string;
+      hasCrossedBarrier?: boolean;
+      growthRate?: number;
     };
-    const symbol = typeof body.symbol === 'string' ? body.symbol.slice(0, 40) : '';
-    const ticks = Array.isArray(body.ticks)
-      ? body.ticks.slice(-50).map(tick => ({ epoch: safeNumber((tick as Record<string, unknown>)?.epoch), quote: safeNumber((tick as Record<string, unknown>)?.quote) })).filter(tick => tick.quote > 0)
-      : [];
-    if (!symbol || ticks.length < 10) return NextResponse.json({ error: 'At least 10 valid ticks and a market symbol are required.' }, { status: 400 });
 
-    const prompt = [
-      'You are a cautious market-analysis assistant for an accumulator trading interface.',
-      'Use the deterministic scanner context and recent ticks as evidence, but do not claim certainty, profitability, or a guaranteed win rate.',
-      'Return WAIT whenever the evidence is mixed, the market is consolidating, momentum conflicts with the EMA direction, or confidence is below 68.',
-      'Recommend a bounded duration of 2 to 8 ticks only when a directional entry is supported.',
-      'Return only valid JSON with direction, confidence, recommendedTicks, and rationale.',
-      `Market: ${symbol}`,
-      `Recent ticks: ${JSON.stringify(ticks)}`,
-      `Deterministic context: ${JSON.stringify(body.localAnalysis ?? {})}`,
-    ].join('\n');
+    const symbol = typeof body.symbol === 'string' ? body.symbol : 'R_100';
+    const spot = Number(body.spot) || 0;
+    const ticks = Array.isArray(body.ticks) ? body.ticks : [];
+    const highBarrier = body.highBarrier;
+    const lowBarrier = body.lowBarrier;
+    const barrierPercentage = body.barrierPercentage;
+    const hasCrossedBarrier = Boolean(body.hasCrossedBarrier);
+    const growthRate = Number(body.growthRate) || 0.01;
 
-    let models = [...PREFERRED_MODELS];
-    let lastFailure = 'Gemini did not return a usable analysis.';
-    const attempted = new Set<string>();
+    // Run deterministic accumulator engine
+    const localAnalysis: AccumulatorAiDecision = analyzeAccumulatorMarket({
+      symbol,
+      spot,
+      ticks,
+      highBarrier,
+      lowBarrier,
+      barrierPercentage,
+      hasCrossedBarrier,
+      growthRate,
+    });
 
-    for (let discoveryPass = 0; discoveryPass < 2; discoveryPass += 1) {
-      for (const model of models) {
-        if (attempted.has(model)) continue;
-        attempted.add(model);
-        for (const structured of [true, false]) {
-          let response: Response;
-          let payload: GeminiError & { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
-          try {
-            ({ response, payload } = await callGemini(apiKey, model, prompt, structured));
-          } catch (error) {
-            lastFailure = error instanceof Error ? error.message : 'Gemini request failed before receiving a response.';
-            continue;
-          }
-          if (!response.ok) {
-            lastFailure = upstreamMessage(response.status, payload);
-            if (response.status === 400 || response.status === 401 || response.status === 403 || response.status === 429) {
-              return NextResponse.json({ error: lastFailure }, { status: response.status === 429 ? 503 : 502 });
-            }
-            continue;
-          }
-          const text = payload.candidates?.[0]?.content?.parts?.map(part => part.text ?? '').join('').trim();
-          const result = text ? parseJson(text) : null;
-          if (!result) {
-            lastFailure = 'Gemini returned an unreadable analysis. Local analysis remains active.';
-            continue;
-          }
-          const direction = result.direction === 'UP' || result.direction === 'DOWN' ? result.direction : 'WAIT';
-          const confidence = Math.min(96, Math.max(40, Math.round(safeNumber(result.confidence, 40))));
-          const recommendedTicks = Math.min(8, Math.max(2, Math.round(safeNumber(result.recommendedTicks, 4))));
-          return NextResponse.json({
-            direction: confidence >= 68 ? direction : 'WAIT',
-            confidence,
-            recommendedTicks,
-            rationale: typeof result.rationale === 'string' ? result.rationale.slice(0, 500) : 'Evidence did not support a stronger conclusion.',
-          });
-        }
-      }
-      try {
-        const discovered = await discoverModels(apiKey);
-        const nextModels = discovered.filter(model => !attempted.has(model));
-        if (!nextModels.length) break;
-        models = nextModels;
-      } catch (error) {
-        lastFailure = error instanceof Error ? error.message : lastFailure;
-        break;
-      }
+    const apiKey = process.env.GEMINI_API_KEY?.trim();
+    if (!apiKey) {
+      // Return high-fidelity local engine analysis when API key is not configured
+      return NextResponse.json({
+        ...localAnalysis,
+        engineSource: 'local_math_engine',
+      });
     }
 
-    return NextResponse.json({ error: lastFailure }, { status: lastFailure.includes('timed out') ? 504 : 502 });
-  } catch {
-    return NextResponse.json({ error: 'Invalid scanner request. Local analysis remains active.' }, { status: 400 });
+    try {
+      const ai = new GoogleGenAI({ apiKey });
+      const prompt = `You are an elite quantitative AI Trading Assistant specializing in Deriv Accumulator contracts.
+In Deriv Accumulators, the trader earns compound growth on each tick (e.g. ${(growthRate * 100).toFixed(0)}%) as long as the price stays STRICTLY BETWEEN the upper barrier and lower barrier. Knockout (total loss) occurs if a tick breaches either barrier.
+
+Market Data:
+- Symbol: ${symbol}
+- Current Spot: ${spot || localAnalysis.metrics.currentSpot}
+- High Barrier: ${highBarrier || 'N/A'}
+- Low Barrier: ${lowBarrier || 'N/A'}
+- Barrier Band: ${barrierPercentage || 'N/A'}
+- Barrier Safety: ${localAnalysis.barrierSafety}
+- Spot Offset from Channel Center: ${localAnalysis.metrics.centerOffsetPercent}%
+- Tick Volatility Score: ${localAnalysis.volatilityScore}/100
+- Recent Ticks: ${JSON.stringify(ticks.slice(-20).map(t => Number(t.quote).toFixed(4)))}
+- Has Barrier Crossed: ${hasCrossedBarrier}
+
+Requirements:
+1. Recommend entryDecision = "ENTER" ONLY when price is safely centered within the barrier channel and tick volatility is low/stable, making it safe to accumulate ticks.
+2. Recommend entryDecision = "WAIT" if spot is skewed close to either barrier, or if tick movement shows volatility spikes.
+3. Recommend a realistic duration of 2 to 6 ticks to target safe profit taking.
+4. Provide a clear rationale explaining barrier clearance and volatility.
+Return JSON matching the schema.`;
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: prompt,
+        config: {
+          temperature: 0.1,
+          responseMimeType: 'application/json',
+          responseSchema,
+        },
+      });
+
+      const responseText = response.text?.trim() || '';
+      if (responseText) {
+        const parsed = JSON.parse(responseText) as Partial<AccumulatorAiDecision>;
+        return NextResponse.json({
+          entryDecision: parsed.entryDecision === 'ENTER' && !hasCrossedBarrier ? 'ENTER' : 'WAIT',
+          confidence: Math.min(98, Math.max(15, Math.round(Number(parsed.confidence) || localAnalysis.confidence))),
+          barrierSafety: parsed.barrierSafety || localAnalysis.barrierSafety,
+          recommendedTicks: Math.min(8, Math.max(2, Math.round(Number(parsed.recommendedTicks) || localAnalysis.recommendedTicks))),
+          riskLevel: parsed.riskLevel || localAnalysis.riskLevel,
+          volatilityScore: Math.min(100, Math.max(0, Math.round(Number(parsed.volatilityScore) || localAnalysis.volatilityScore))),
+          rationale: parsed.rationale || localAnalysis.rationale,
+          reasons: localAnalysis.reasons,
+          metrics: localAnalysis.metrics,
+          engineSource: 'gemini_3.8_flash',
+        });
+      }
+    } catch {
+      // Fallback to local engine if upstream call fails
+    }
+
+    return NextResponse.json({
+      ...localAnalysis,
+      engineSource: 'local_math_engine',
+    });
+  } catch (error) {
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Analysis failed' },
+      { status: 500 }
+    );
   }
 }

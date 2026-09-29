@@ -3,15 +3,22 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -p 3000 -H 0.0.0.0",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -p 3000 -H 0.0.0.0",
+    "lint": "tsc --noEmit",
     "copy-smartcharts-assets": "node scripts/copy-smartcharts-assets.js",
     "postinstall": "node scripts/copy-smartcharts-assets.js",
     "prebuild": "node scripts/copy-smartcharts-assets.js"
   },
+  "workspaces": [
+    "packages/*"
+  ],
   "dependencies": {
+    "@deriv-com/smartcharts-champion": "^1.9.13",
     "@deriv-com/translations": "^1.4.6",
+    "@deriv/core": "*",
+    "@google/genai": "^2.24.0",
     "@radix-ui/react-accordion": "^1.1.2",
     "@radix-ui/react-alert-dialog": "^1.0.5",
     "@radix-ui/react-aspect-ratio": "^1.0.3",
@@ -59,8 +66,7 @@
     "tailwindcss-animate": "^1.0.7",
     "undici": "7.29.0",
     "uuid": "11.1.1",
-    "vaul": "^0.9.0",
-    "@deriv-com/smartcharts-champion": "^1.9.13"
+    "vaul": "^0.9.0"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",

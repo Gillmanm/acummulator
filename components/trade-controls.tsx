@@ -14,6 +14,9 @@ import { LANGUAGE_LOCALES } from '@/lib/i18n';
 import type { BuyResult } from '@deriv/core';
 import type { AccumulatorProposalInfo } from '../hooks/use-accumulator-proposal';
 import type { GrowthRate, OpenPosition } from '../lib/types';
+import type { UseAccumulatorAiTraderReturn } from '@/hooks/use-accumulator-ai-trader';
+import { AiAccumulatorTraderPanel } from './ai-accumulator-trader-panel';
+import { Sparkles, Lock } from 'lucide-react';
 
 interface TradeControlsProps {
   growthRate: GrowthRate;
@@ -38,6 +41,8 @@ interface TradeControlsProps {
   isClosing?: boolean;
   /** Whether the user is authenticated — shows the View your positions link when true. */
   isAuthenticated?: boolean;
+  /** AI Accumulator Trader engine */
+  aiTrader?: UseAccumulatorAiTraderReturn;
 }
 
 export function TradeControls({
@@ -59,6 +64,7 @@ export function TradeControls({
   onClose,
   isClosing,
   isAuthenticated,
+  aiTrader,
 }: TradeControlsProps) {
   const { currentLang, localize } = useAppTranslations();
   const numberLocale = LANGUAGE_LOCALES[currentLang];
@@ -268,21 +274,58 @@ export function TradeControls({
         </div>
       )}
 
+      {/* AI Accumulator Trader Panel */}
+      {aiTrader && (
+        <AiAccumulatorTraderPanel
+          trader={aiTrader}
+          activePosition={activePosition}
+          proposal={proposal}
+          isConnected={isConnected}
+          isAuthenticated={!!isAuthenticated}
+          stake={stake}
+          growthRate={growthRate}
+        />
+      )}
+
       {/* Buy / Close button — inline on desktop, fixed above footer on mobile */}
       <div className="max-lg:fixed max-lg:bottom-[calc(env(safe-area-inset-bottom)+2.5rem)] max-lg:left-3 max-lg:right-3 lg:static">
         {!activePosition && (
-          <Button
-            className="w-full rounded-full bg-primary hover:bg-primary/90 text-primary-foreground"
-            size="lg"
-            disabled={!isConnected || !proposal || isBuying}
-            onClick={onBuy}
-          >
-            {isBuying ? (
-              <Localize i18n_default_text="Purchasing..." />
-            ) : (
-              <Localize i18n_default_text="Buy" />
-            )}
-          </Button>
+          aiTrader?.aiMode === 'ai_only' ? (
+            <div className="space-y-1.5">
+              <Button
+                className="w-full rounded-full bg-gradient-to-r from-primary to-blue-600 hover:from-primary/90 hover:to-blue-700 text-primary-foreground font-semibold shadow-md"
+                size="lg"
+                disabled={!isConnected || !proposal || isBuying || aiTrader.isExecuting}
+                onClick={() => aiTrader.executeAiEntry(true)}
+              >
+                {isBuying || aiTrader.isExecuting ? (
+                  <Localize i18n_default_text="AI Placing Entry..." />
+                ) : (
+                  <span className="flex items-center justify-center gap-2">
+                    <Sparkles className="h-4 w-4" />
+                    <Localize i18n_default_text="AI Place Entry" />
+                  </span>
+                )}
+              </Button>
+              <p className="text-center text-[10px] text-muted-foreground flex items-center justify-center gap-1">
+                <Lock className="h-3 w-3 text-primary" />
+                AI-Only Mode: Entries governed by AI engine
+              </p>
+            </div>
+          ) : (
+            <Button
+              className="w-full rounded-full bg-primary hover:bg-primary/90 text-primary-foreground"
+              size="lg"
+              disabled={!isConnected || !proposal || isBuying}
+              onClick={onBuy}
+            >
+              {isBuying ? (
+                <Localize i18n_default_text="Purchasing..." />
+              ) : (
+                <Localize i18n_default_text="Buy" />
+              )}
+            </Button>
+          )
         )}
 
         {activePosition && onClose && (

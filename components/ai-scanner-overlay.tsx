@@ -5,6 +5,7 @@ import { Activity, AlertCircle, BrainCircuit, CheckCircle2, ChevronDown, X } fro
 import type { ActiveSymbol } from '@deriv/core';
 import type { UseSmartChartsApiReturn } from '@/hooks/use-smartcharts-api';
 import { analyzeAiTicks, type AiDirection, type AiTick, type AiTickAnalysis } from '@/lib/ai-tick-scanner';
+import type { UseAccumulatorAiTraderReturn } from '@/hooks/use-accumulator-ai-trader';
 
 const MAX_TICKS = 50;
 type ExecutionMode = 'analysis' | 'paper' | 'live';
@@ -24,6 +25,7 @@ type Props = {
   getQuotes: UseSmartChartsApiReturn['getQuotes'];
   subscribeQuotes: UseSmartChartsApiReturn['subscribeQuotes'];
   onPlaceEntry: (request: EntryRequest) => Promise<void>;
+  aiTrader?: UseAccumulatorAiTraderReturn;
 };
 
 type AiResponse = {
@@ -50,7 +52,15 @@ function statusFor(analysis: AiTickAnalysis): { label: string; className: string
   return { label: 'Waiting for confirmation', className: 'border-border bg-muted/30 text-muted-foreground' };
 }
 
-export function AiScannerOverlay({ activeSymbol, symbols, isConnected, getQuotes, subscribeQuotes, onPlaceEntry }: Props) {
+export function AiScannerOverlay({
+  activeSymbol,
+  symbols,
+  isConnected,
+  getQuotes,
+  subscribeQuotes,
+  onPlaceEntry,
+  aiTrader,
+}: Props) {
   const [open, setOpen] = useState(false);
   const [ticks, setTicks] = useState<AiTick[]>([]);
   const [watchlist, setWatchlist] = useState<string[]>([]);
@@ -197,6 +207,30 @@ export function AiScannerOverlay({ activeSymbol, symbols, isConnected, getQuotes
             <div className={`rounded-lg border px-3 py-2 text-sm font-semibold ${scannerStatus.className}`}><div className="flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-current" />{scannerStatus.label}<span className="ml-auto text-xs font-normal">{analysis.confidence}%</span></div></div>
             <div className="grid grid-cols-4 gap-2 text-center text-[11px]"><div className="rounded-lg bg-muted/50 p-2"><span className="block text-muted-foreground">Trend</span><strong>{analysis.direction}</strong></div><div className="rounded-lg bg-muted/50 p-2"><span className="block text-muted-foreground">Ticks</span><strong>{recommendedTicks}</strong></div><div className="rounded-lg bg-muted/50 p-2"><span className="block text-muted-foreground">RSI</span><strong>{analysis.rsi.toFixed(0)}</strong></div><div className="rounded-lg bg-muted/50 p-2"><span className="block text-muted-foreground">Count</span><strong>{analysis.tickCountSinceLineChange}/{MAX_TICKS}</strong></div></div>
             <div className="rounded-lg border border-border bg-muted/20 p-3 text-xs text-muted-foreground"><div className="mb-1 flex items-center gap-1.5 font-semibold text-foreground"><CheckCircle2 className="h-3.5 w-3.5 text-primary" />Scanner conditions</div><p>EMA(5) / EMA(13), RSI(14), momentum, range, confidence, and consolidation are checked before entry.</p><p className="mt-1">New count starts after the detected EMA line direction changes.</p>{analysis.reasons.slice(0, 3).map(reason => <p key={reason} className="mt-1">• {reason}</p>)}</div>
+            {aiTrader && (
+              <div className="rounded-lg border border-primary/30 bg-primary/10 p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-primary">Accumulator AI Engine</span>
+                  <span className="text-[10px] uppercase font-bold px-1.5 py-0.5 rounded bg-primary text-primary-foreground">
+                    {aiTrader.aiMode === 'ai_only' ? 'AI ONLY' : 'AI ACTIVE'}
+                  </span>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Channel Safety: {aiTrader.aiDecision?.barrierSafety || 'SAFE'} | Confidence: {aiTrader.aiDecision?.confidence || 75}%
+                </p>
+                <button
+                  type="button"
+                  disabled={aiTrader.isExecuting || aiTrader.status === 'COOLING_DOWN'}
+                  onClick={async () => {
+                    await aiTrader.executeAiEntry(true);
+                    setOpen(false);
+                  }}
+                  className="w-full rounded-md bg-primary py-2 text-xs font-bold text-primary-foreground shadow hover:opacity-90 disabled:opacity-50"
+                >
+                  {aiTrader.isExecuting ? 'Placing AI Entry...' : 'Place AI Accumulator Entry Now'}
+                </button>
+              </div>
+            )}
             <div className="flex gap-2"><button type="button" disabled={ticks.length < 10 || aiLoading} onClick={runGeminiAnalysis} className="flex-1 rounded-md bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50">{aiLoading ? 'Analysing…' : 'Run Gemini analysis'}</button><button type="button" disabled={!effectiveReady} onClick={() => setConfirming(true)} className="flex-1 rounded-md border border-border px-3 py-2 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50">Review entry</button></div>
             {aiError && <p className="text-xs text-amber-600 dark:text-amber-400">{aiError}</p>}
             {aiResponse?.rationale && <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 text-xs"><p className="mb-1 font-semibold">Gemini rationale</p><p className="text-muted-foreground">{aiResponse.rationale}</p></div>}

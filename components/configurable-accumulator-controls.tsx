@@ -21,7 +21,7 @@
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { Localize } from '@deriv-com/translations';
-import { GripVertical } from 'lucide-react';
+import { GripVertical, Sparkles, Lock } from 'lucide-react';
 import { toast } from 'sonner';
 import { useRearrangeDrag } from '@/hooks/use-rearrange-drag';
 import { Button } from '@/components/ui/button';
@@ -36,6 +36,8 @@ import type { BuyResult } from '@deriv/core';
 import type { AccumulatorProposalInfo } from '../hooks/use-accumulator-proposal';
 import type { GrowthRate, OpenPosition } from '../lib/types';
 import type { BlockKey, ControlKey, AccumulatorsAppConfig, StyleVariant } from '../lib/app-config';
+import type { UseAccumulatorAiTraderReturn } from '@/hooks/use-accumulator-ai-trader';
+import { AiAccumulatorTraderPanel } from './ai-accumulator-trader-panel';
 
 /** Human labels shown on each draggable block in rearrange mode. */
 function getBlockLabels(localize: (text: string) => string): Record<BlockKey, string> {
@@ -109,6 +111,8 @@ export interface ConfigurableAccumulatorControlsProps {
    * order. It manages its own edit selection, so it's placed as-is.
    */
   chartSlot?: React.ReactNode;
+  /** AI Accumulator Trader engine */
+  aiTrader?: UseAccumulatorAiTraderReturn;
 }
 
 export function ConfigurableAccumulatorControls(props: ConfigurableAccumulatorControlsProps) {
@@ -138,6 +142,7 @@ export function ConfigurableAccumulatorControls(props: ConfigurableAccumulatorCo
     rearrangeMode,
     onReorder,
     chartSlot,
+    aiTrader,
   } = props;
 
   const { currentLang, localize } = useAppTranslations();
@@ -587,6 +592,81 @@ export function ConfigurableAccumulatorControls(props: ConfigurableAccumulatorCo
 
     const disabled = !isConnected || !proposal || isBuying;
 
+    if (aiTrader?.aiMode === 'ai_only') {
+      const isExecuting = isBuying || aiTrader.isExecuting;
+      const onAiClick = () => aiTrader.executeAiEntry(true);
+      const variants: Record<StyleVariant, () => React.ReactNode> = {
+        a: () => (
+          <div className="space-y-1.5">
+            <Button
+              className="w-full rounded-full bg-gradient-to-r from-primary to-blue-600 hover:from-primary/90 hover:to-blue-700 text-primary-foreground font-semibold shadow-md"
+              size="lg"
+              disabled={disabled || isExecuting}
+              onClick={onAiClick}
+            >
+              {isExecuting ? (
+                <Localize i18n_default_text="AI Placing Entry..." />
+              ) : (
+                <span className="flex items-center justify-center gap-2">
+                  <Sparkles className="h-4 w-4" />
+                  <Localize i18n_default_text="AI Place Entry" />
+                </span>
+              )}
+            </Button>
+            <p className="text-center text-[10px] text-muted-foreground flex items-center justify-center gap-1">
+              <Lock className="h-3 w-3 text-primary" />
+              AI-Only Mode: Entries placed via AI engine
+            </p>
+          </div>
+        ),
+        b: () => (
+          <div className="space-y-1.5">
+            <Button
+              className="w-full h-14 rounded-md bg-gradient-to-r from-primary to-blue-600 hover:from-primary/90 hover:to-blue-700 text-primary-foreground text-base font-bold shadow-md"
+              disabled={disabled || isExecuting}
+              onClick={onAiClick}
+            >
+              {isExecuting ? (
+                <Localize i18n_default_text="AI Placing Entry..." />
+              ) : (
+                <span className="flex items-center justify-center gap-2">
+                  <Sparkles className="h-4 w-4" />
+                  <Localize i18n_default_text="AI Place Entry" />
+                </span>
+              )}
+            </Button>
+            <p className="text-center text-[10px] text-muted-foreground flex items-center justify-center gap-1">
+              <Lock className="h-3 w-3 text-primary" />
+              AI-Only Mode: Entries placed via AI engine
+            </p>
+          </div>
+        ),
+        c: () => (
+          <div className="space-y-1.5">
+            <Button
+              className="w-full h-14 rounded-xl bg-gradient-to-r from-primary via-blue-600 to-indigo-600 hover:opacity-90 text-primary-foreground shadow-lg shadow-primary/20 font-semibold"
+              disabled={disabled || isExecuting}
+              onClick={onAiClick}
+            >
+              {isExecuting ? (
+                <Localize i18n_default_text="AI Placing Entry..." />
+              ) : (
+                <span className="flex items-center justify-center gap-2">
+                  <Sparkles className="h-4 w-4" />
+                  <Localize i18n_default_text="AI Place Entry" />
+                </span>
+              )}
+            </Button>
+            <p className="text-center text-[10px] text-muted-foreground flex items-center justify-center gap-1">
+              <Lock className="h-3 w-3 text-primary" />
+              AI-Only Mode: Entries placed via AI engine
+            </p>
+          </div>
+        ),
+      };
+      return (variants[variant] ?? variants.a)();
+    }
+
     const variants: Record<StyleVariant, () => React.ReactNode> = {
       // a — pill (default, exactly today's control)
       a: () => (
@@ -736,6 +816,17 @@ export function ConfigurableAccumulatorControls(props: ConfigurableAccumulatorCo
 
   return (
     <div className="w-full space-y-3 lg:space-y-4">
+      {aiTrader && (
+        <AiAccumulatorTraderPanel
+          trader={aiTrader}
+          activePosition={activePosition}
+          proposal={proposal}
+          isConnected={isConnected}
+          isAuthenticated={!!isAuthenticated}
+          stake={stake}
+          growthRate={growthRate}
+        />
+      )}
       {config.order.map((key) => {
         // Chart only renders where a chartSlot is provided (the no-code mobile
         // column). On desktop the chart lives in its own column.
